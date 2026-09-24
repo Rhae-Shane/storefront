@@ -45,11 +45,11 @@ export class StockHoldService {
     }
 
     try {
-      const result = await redis.eval(
+      const result = (await redis.eval(
         STOCK_HOLD_LUA,
         [holdsKey(productId)],
         [cartId, String(quantity), String(stockQuantity), String(ttl)],
-      );
+      )) as [number, number, number];
 
       const ok = result[0] === 1;
       return {
