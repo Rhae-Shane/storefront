@@ -1,21 +1,213 @@
 # Shopping Cart — Design Document
 
-**Objective:** Design a backend for an online store shopping cart so users can browse products, add/update/remove cart lines, view the cart, and check out — including a correct response when stock disappears between “add” and “pay.”
+**Written answers to the three assignment sections are below.**  
+Deeper implementation notes follow after that.
 
-**Stack:** Express 5 · Prisma 6 · PostgreSQL (Supabase) · Upstash Redis · Supabase Storage (S3)  
-**Base URL:** `http://localhost:3002` · **OpenAPI:** `/api-docs`
-
-This document answers the three assignment sections first, then notes production extensions beyond the prompt.
-
-## Architecture overview
+| | |
+|--|--|
+| **Live API docs** | [https://storefront-awbc.onrender.com/api-docs#/](https://storefront-awbc.onrender.com/api-docs#/) |
+| **Health / ready** | [https://storefront-awbc.onrender.com/ready](https://storefront-awbc.onrender.com/ready) |
+| **Local OpenAPI** | `http://localhost:3002/api-docs` |
+| **Stack** | Express 5 · Prisma 6 · PostgreSQL · Upstash Redis · Supabase Storage |
 
 ![Shopping Cart — System Architecture](./docs/images/system-architecture.jpg)
 
-*Client → Express API (JWT + cart/checkout) → Upstash Redis (rate limits, soft stock holds, cache) → Postgres as source of truth → Supabase Storage for WebP product images. Soft hold (TTL) then checkout commit.*
+*Client → Express API → Redis (rate limits, soft stock holds, short cache) → Postgres as source of truth → product images in storage. Soft hold while shopping; checkout commits in Postgres.*
 
 ---
 
+# Assignment answers (written design)
+
 ## 1. Database Relationships
+
+We use a relational (SQL) schema. The brief names **Users**, **Products**, and **Cart Items**. Those three alone imply a **Many-to-Many** between users and products (many shoppers can hold the same SKU; one shopper can hold many SKUs). The join table is cart lines.
+
+In practice we add a **`carts`** table between the user and the lines. That is still the same Many-to-Many — carts are the lifecycle boundary (guest cart, checkout history, one live cart per user). Without carts, guest shopping and “old cart vs new cart after pay” get messy.
+
+![§1 Database Relationships — ERD](./docs/images/database-relationships.jpg)
+
+*Users 1→N Carts 1→N Cart Items N←1 Products. One ACTIVE cart per user (or guest session). After checkout the cart becomes CHECKED_OUT and a new ACTIVE cart is opened.*
+
+### Tables, columns, and types
+
+#### `users`
+
+| Column | Type | Notes |
+|--------|------|--------|
+| `id` | `UUID` | Primary key |
+| `email` | `VARCHAR(255)` | Unique, required |
+| `password_hash` | `VARCHAR(255)` | bcrypt |
+| `name` | `VARCHAR(255)` | Optional |
+| `created_at` / `updated_at` | `TIMESTAMPTZ` | |
+
+#### `products`
+
+| Column | Type | Notes |
+|--------|------|--------|
+| `id` | `UUID` | Primary key |
+| `sku` | `VARCHAR(64)` | Unique |
+| `name` | `VARCHAR(255)` | |
+| `description` | `TEXT` | Optional |
+| `image_url` | `TEXT` | Optional |
+| `price_cents` | `INTEGER` | Money as integer cents |
+| `stock_quantity` | `INTEGER` | `CHECK >= 0` |
+| `version` | `INTEGER` | Optimistic lock at checkout |
+| `created_at` / `updated_at` | `TIMESTAMPTZ` | |
+
+#### `carts` (lifecycle wrapper around cart items)
+
+| Column | Type | Notes |
+|--------|------|--------|
+| `id` | `UUID` | Primary key |
+| `user_id` | `UUID` FK → `users` | **NULL for guests** |
+| `session_token` | `VARCHAR(128)` | Guest identity (`x-cart-session`) |
+| `status` | `ENUM` | `ACTIVE` \| `CHECKED_OUT` \| `ABANDONED` |
+| `created_at` / `updated_at` | `TIMESTAMPTZ` | |
+
+#### `cart_items`
+
+| Column | Type | Notes |
+|--------|------|--------|
+| `id` | `UUID` | Primary key |
+| `cart_id` | `UUID` FK → `carts` | |
+| `product_id` | `UUID` FK → `products` | |
+| `quantity` | `INTEGER` | `CHECK > 0` |
+| `unit_price_cents` | `INTEGER` | Price **snapshot** when added |
+| | | **UNIQUE (`cart_id`, `product_id`)** |
+
+### Relationships (assignment vocabulary)
+
+| Pair | Cardinality | How |
+|------|-------------|-----|
+| **User ↔ Product** | **Many-to-Many** | Through `carts` + `cart_items` |
+| **User → Cart Item** | **One-to-Many** (indirect) | User → Cart → Cart Items |
+| **Product → Cart Item** | **One-to-Many** | Many lines can reference one product |
+| User → Cart | One-to-Many | At most one `ACTIVE` cart at a time |
+| Cart → Cart Item | One-to-Many | Lines belong to exactly one cart |
+
+There is **no One-to-One** between Users and Products. Money is stored as cents; `unit_price_cents` freezes the price on the line so a catalog change does not silently rewrite an open cart.
+
+---
+
+## 2. API Endpoints
+
+Cart writes need `x-api-key`, plus either a logged-in `Authorization: Bearer <access JWT>` or a guest `x-cart-session`. Full interactive docs (try the routes live):
+
+**[https://storefront-awbc.onrender.com/api-docs#/](https://storefront-awbc.onrender.com/api-docs#/)**
+
+![§2 Cart Endpoints](./docs/images/cart-endpoints.jpg)
+
+*`GET /cart` · `POST` / `PATCH` / `DELETE` on `/cart/items` · common errors 400 / 401 / 404 / 409 / 429.*
+
+### Required cart mutations
+
+#### Add an item to the cart
+
+| | |
+|--|--|
+| **HTTP method** | `POST` |
+| **Route** | `/api/v1/cart/items` |
+| **Body parameters** | `{ "productId": "<uuid>", "quantity": 2 }` |
+| **Success** | `201` + full cart JSON |
+| **Errors** | `404` product missing · `409 INSUFFICIENT_STOCK` |
+
+Upserts by `(cart_id, product_id)`, snapshots `unit_price_cents`, and places a short-lived soft hold in Redis so flash-sale units are not over-promised across carts.
+
+#### Update the quantity of an item in the cart
+
+| | |
+|--|--|
+| **HTTP method** | `PATCH` |
+| **Route** | `/api/v1/cart/items/:productId` |
+| **Path parameter** | `productId` (product UUID) |
+| **Body parameters** | `{ "quantity": 5 }` |
+| **Success** | `200` + full cart JSON |
+| **Errors** | `404` line missing · `409 INSUFFICIENT_STOCK` |
+
+#### Remove an item from the cart
+
+| | |
+|--|--|
+| **HTTP method** | `DELETE` |
+| **Route** | `/api/v1/cart/items/:productId` |
+| **Path parameter** | `productId` |
+| **Body** | none |
+| **Success** | `204 No Content` (safe if already gone) |
+
+Also part of the objective flow (browse / view / pay):
+
+| Goal | Method | Route | Parameters |
+|------|--------|-------|------------|
+| Browse | `GET` | `/api/v1/products` | — |
+| View cart | `GET` | `/api/v1/cart` | headers only |
+| Checkout | `POST` | `/api/v1/checkout` | header **`Idempotency-Key`** (required) + Bearer |
+
+---
+
+## 3. The “Out of Stock” Edge Case
+
+**Scenario:** User A already has the last unit in their cart. Right before A hits Checkout, User B buys that last unit. A then checks out.
+
+**Principle:** Never silently succeed or oversell. Prefer a clear conflict the client can show in the UI. **Postgres is the source of truth at payment time.** Redis soft holds only reduce how often this race happens; they do not replace the checkout check.
+
+![§3 Out of Stock Edge Case](./docs/images/out-of-stock-edge-case.jpg)
+
+*A soft-holds the last unit → B’s checkout commits in Postgres → A gets `409 OUT_OF_STOCK`. Motto: Redis reduces races · Postgres decides.*
+
+### Defense in depth
+
+![Inventory — Defense in Depth](./docs/images/inventory-defense-in-depth.jpg)
+
+*Layer 1: early `409 INSUFFICIENT_STOCK` on add/update · Layer 2: Redis soft hold (TTL) · Layer 3: Postgres checkout transaction. Fast feedback, fewer races, consistent inventory.*
+
+### What the system does when A checks out after B
+
+1. If `(userId, Idempotency-Key)` already has an order → return that order (safe retry / double-click).
+2. Open a **database transaction**. Load A’s ACTIVE cart and **live** product `stock_quantity` + `version` inside the transaction.
+3. For each cart line, attempt an atomic decrement:
+
+```sql
+UPDATE products
+SET stock_quantity = stock_quantity - :qty,
+    version        = version + 1,
+    updated_at     = NOW()
+WHERE id = :id::uuid
+  AND stock_quantity >= :qty
+  AND version = :expectedVersion;
+```
+
+4. **If any update returns 0 rows** (B already took the unit, or version moved):
+   - Roll back the order (no charge, no partial sell).
+   - Adjust A’s cart: set quantity to what is left, or **delete** the line if `available = 0`.
+   - Respond **`409 Conflict`**:
+
+```json
+{
+  "statusCode": 409,
+  "error": "OUT_OF_STOCK",
+  "message": "Some items in your cart are no longer available.",
+  "unavailableItems": [
+    {
+      "productId": "…",
+      "name": "Limited Edition M1 Demo Unit",
+      "requested": 1,
+      "available": 0
+    }
+  ]
+}
+```
+
+5. **If every line succeeds:** create the order (`PENDING` → `COMPLETED`), mark the cart `CHECKED_OUT`, open a new `ACTIVE` cart, clear Redis holds for that cart, return `201`.
+
+That is seamless for the product: no money taken for missing stock, a structured error the UI can render, a cart left in a usable state, and idempotent retries so Pay is not double-applied.
+
+---
+
+# Detailed design (implementation reference)
+
+The sections below expand the same three answers with schema detail, supporting endpoints, and production notes.
+
+## 1. Database Relationships (detail)
 
 ### Design choice (why not `cart_items.user_id` alone?)
 
@@ -123,7 +315,7 @@ Partial unique indexes (SQL migration; Prisma cannot express these):
 
 ---
 
-## 2. API Endpoints
+## 2. API Endpoints (detail)
 
 **Auth model**
 
@@ -206,7 +398,7 @@ Behavior: upsert by `(cart_id, product_id)`; snapshot `unit_price_cents`; reserv
 
 ---
 
-## 3. The “Out of Stock” Edge Case
+## 3. The “Out of Stock” Edge Case (detail)
 
 ### Scenario
 
