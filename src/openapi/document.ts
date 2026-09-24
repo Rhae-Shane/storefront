@@ -396,6 +396,8 @@ export function buildOpenApiDocument() {
 
   const baseUrl =
     process.env.BASE_URL?.replace(/\/$/, '') || 'http://localhost:3002';
+  const isLocalBase =
+    baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1');
 
   const generator = new OpenApiGeneratorV3(registry.definitions);
   return generator.generateDocument({
@@ -406,10 +408,16 @@ export function buildOpenApiDocument() {
       description:
         'REST API with short-lived JWT access tokens and long-lived refresh sessions. Cart/checkout require `x-api-key` and `Authorization: Bearer <accessToken>`. Built with Express, Prisma, and PostgreSQL.',
     },
-    servers: [
-      { url: baseUrl, description: 'Configured BASE_URL' },
-      { url: 'http://localhost:3002', description: 'DEV server (local)' },
-    ],
+    // Runtime /api/openapi overrides this with the request host. Keep BASE_URL
+    // accurate for generated openapi.json and absolute links in responses.
+    servers: isLocalBase
+      ? [
+          { url: baseUrl, description: 'Local development' },
+        ]
+      : [
+          { url: baseUrl, description: 'Configured BASE_URL' },
+          { url: 'http://localhost:3002', description: 'Local development' },
+        ],
     tags: [
       { name: 'Auth', description: 'Register, login, refresh, logout' },
       { name: 'Products', description: 'Browse catalog' },

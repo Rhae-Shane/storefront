@@ -1,5 +1,18 @@
 import type { Express, Request, Response } from 'express';
+import { config } from './config';
 import { buildOpenApiDocument } from './openapi/document';
+
+/** Prefer the host the browser hit (works on Render even if BASE_URL is wrong). */
+function requestPublicOrigin(req: Request): string {
+  const forwardedProto = req.get('x-forwarded-proto')?.split(',')[0]?.trim();
+  const forwardedHost = req.get('x-forwarded-host')?.split(',')[0]?.trim();
+  const proto = forwardedProto || req.protocol || 'https';
+  const host = forwardedHost || req.get('host');
+  if (host) {
+    return `${proto}://${host}`.replace(/\/$/, '');
+  }
+  return config.baseUrl.replace(/\/$/, '');
+}
 
 function renderApiExplorerHtml(): string {
   return `<!doctype html>
@@ -139,8 +152,20 @@ export function mountSwagger(app: Express): void {
   const document = buildOpenApiDocument();
   const html = renderApiExplorerHtml();
 
-  const sendOpenApi = (_req: Request, res: Response) => {
-    res.type('application/json').send(document);
+  const sendOpenApi = (req: Request, res: Response) => {
+    const origin = requestPublicOrigin(req);
+    const servers = [
+      { url: origin, description: 'This deployment' },
+      {
+        url: 'http://localhost:3002',
+        description: 'Local development',
+      },
+    ];
+    // Avoid duplicating identical URLs when BASE_URL already matches origin
+    const unique = servers.filter(
+      (s, i, arr) => arr.findIndex((x) => x.url === s.url) === i,
+    );
+    res.type('application/json').send({ ...document, servers: unique });
   };
 
   app.get('/api/openapi', sendOpenApi);
