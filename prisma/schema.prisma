@@ -1,0 +1,149 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum CartStatus {
+  ACTIVE
+  CHECKED_OUT
+  ABANDONED
+}
+
+enum OrderStatus {
+  PENDING
+  COMPLETED
+  CANCELLED
+}
+
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  email        String   @unique @db.VarChar(255)
+  passwordHash String   @map("password_hash") @db.VarChar(255)
+  name         String?  @db.VarChar(255)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  carts           Cart[]
+  orders          Order[]
+  refreshSessions RefreshSession[]
+
+  @@map("users")
+}
+
+model Product {
+  id            String   @id @default(uuid()) @db.Uuid
+  sku           String   @unique @db.VarChar(64)
+  name          String   @db.VarChar(255)
+  description   String?  @db.Text
+  /// Object-store URL (S3/R2/etc). DB stores the URL/key only — not the binary.
+  imageUrl      String?  @map("image_url") @db.Text
+  priceCents    Int      @map("price_cents")
+  stockQuantity Int      @map("stock_quantity")
+  /// Optimistic concurrency / bump on each successful stock mutation.
+  version       Int      @default(0)
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  cartItems  CartItem[]
+  orderItems OrderItem[]
+
+  @@map("products")
+}
+
+model Cart {
+  id           String     @id @default(uuid()) @db.Uuid
+  /// Null for guest carts (identified by sessionToken until login merge).
+  userId       String?    @map("user_id") @db.Uuid
+  /// Opaque client session id for anonymous carts (`x-cart-session` header).
+  sessionToken String?    @unique @map("session_token") @db.VarChar(128)
+  status       CartStatus @default(ACTIVE)
+  createdAt    DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user   User?      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items  CartItem[]
+  orders Order[]
+
+  @@index([userId, status])
+  @@index([sessionToken, status])
+  @@map("carts")
+}
+
+model CartItem {
+  id             String   @id @default(uuid()) @db.Uuid
+  cartId         String   @map("cart_id") @db.Uuid
+  productId      String   @map("product_id") @db.Uuid
+  quantity       Int
+  /// Snapshot of product price when added/updated — protects against mid-cart price changes.
+  unitPriceCents Int      @map("unit_price_cents")
+  addedAt        DateTime @default(now()) @map("added_at") @db.Timestamptz(6)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  cart    Cart    @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@unique([cartId, productId])
+  @@index([cartId])
+  @@map("cart_items")
+}
+
+model Order {
+  id             String      @id @default(uuid()) @db.Uuid
+  userId         String      @map("user_id") @db.Uuid
+  cartId         String?     @map("cart_id") @db.Uuid
+  totalCents     Int         @map("total_cents")
+  /// Starts PENDING; flip to COMPLETED only after checkout/payment succeeds.
+  status         OrderStatus @default(PENDING)
+  /// Required at checkout API layer so retries cannot create duplicate orders.
+  idempotencyKey String      @map("idempotency_key") @db.VarChar(128)
+  createdAt      DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime    @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  /// Keep financial history — block hard-deleting users with orders.
+  user  User        @relation(fields: [userId], references: [id], onDelete: Restrict)
+  cart  Cart?       @relation(fields: [cartId], references: [id], onDelete: SetNull)
+  items OrderItem[]
+
+  @@unique([userId, idempotencyKey])
+  @@index([userId])
+  @@map("orders")
+}
+
+model OrderItem {
+  id             String @id @default(uuid()) @db.Uuid
+  orderId        String @map("order_id") @db.Uuid
+  productId      String @map("product_id") @db.Uuid
+  quantity       Int
+  unitPriceCents Int    @map("unit_price_cents")
+
+  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([orderId])
+  @@map("order_items")
+}
+
+model RefreshSession {
+  id                  String    @id @default(uuid()) @db.Uuid
+  userId              String    @map("user_id") @db.Uuid
+  tokenHash           String    @unique @map("token_hash") @db.VarChar(64)
+  expiresAt           DateTime  @map("expires_at") @db.Timestamptz(6)
+  revokedAt           DateTime? @map("revoked_at") @db.Timestamptz(6)
+  replacedBySessionId String?   @map("replaced_by_session_id") @db.Uuid
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user       User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// Many-to-one on purpose: reuse detection may point several old sessions at one new session.
+  /// Do NOT add a unique constraint on replacedBySessionId.
+  replacedBy RefreshSession?  @relation("SessionRotation", fields: [replacedBySessionId], references: [id], onDelete: SetNull)
+  replaces   RefreshSession[] @relation("SessionRotation")
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("refresh_sessions")
+}
