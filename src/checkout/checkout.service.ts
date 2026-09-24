@@ -26,9 +26,7 @@ export class CheckoutService {
 
   async checkout(userId: string, idempotencyKey: string) {
     if (!idempotencyKey || idempotencyKey.length < 8) {
-      throw new BadRequestError(
-        'Idempotency-Key header (or body.idempotencyKey) is required',
-      );
+      throw new BadRequestError('Idempotency-Key header is required');
     }
 
     const existing = await this.prisma.order.findUnique({

@@ -329,7 +329,7 @@ export function buildOpenApiDocument() {
     tags: ['Checkout'],
     summary: 'Checkout',
     description:
-      'Atomic conditional stock decrement (`stock_quantity >= qty AND version = expected`) + order create. **Idempotency-Key is required** (header or body). Order is created PENDING then flipped to COMPLETED after sync “payment” succeeds. Marks cart CHECKED_OUT and opens a new ACTIVE cart. Returns 409 OUT_OF_STOCK if stock raced away.',
+      'Atomic conditional stock decrement (`stock_quantity >= qty AND version = expected`) + order create. **Idempotency-Key header is required**. Order is created PENDING then flipped to COMPLETED after sync “payment” succeeds. Marks cart CHECKED_OUT and opens a new ACTIVE cart. Returns 409 OUT_OF_STOCK if stock raced away.',
     security: cartSecurity,
     request: {
       body: {
@@ -343,7 +343,8 @@ export function buildOpenApiDocument() {
         name: 'Idempotency-Key',
         in: 'header' as const,
         required: true,
-        description: 'Unique key per checkout attempt (required for retry safety).',
+        description:
+          'Client-generated unique key per checkout attempt. Retries with the same key return the same order.',
         schema: { type: 'string' as const, minLength: 8, maxLength: 128 },
       },
     ],

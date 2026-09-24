@@ -180,21 +180,8 @@ export const stockConflictSchema = z
   })
   .openapi('StockConflictResponse');
 
-export const checkoutSchema = z
-  .object({
-    idempotencyKey: z
-      .string()
-      .min(8)
-      .max(128)
-      .optional()
-      .openapi({
-        description:
-          'Required unless sent as Idempotency-Key header. Prevents duplicate checkout on retries.',
-        example: 'checkout-7c9e6679-7425-40de-944b-e07fc1f90ae7',
-      }),
-  })
-  .strict()
-  .openapi('CheckoutRequest');
+/** Checkout body is empty; pass Idempotency-Key as a header only. */
+export const checkoutSchema = z.object({}).strict().openapi('CheckoutRequest');
 
 export const mergeCartSchema = z
   .object({

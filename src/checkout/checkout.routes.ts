@@ -16,16 +16,9 @@ export function createCheckoutRouter(checkoutService: CheckoutService) {
     validateBody(checkoutSchema),
     async (req, res, next) => {
       try {
-        const headerKey = req.header('idempotency-key')?.trim();
-        const bodyKey =
-          typeof req.body?.idempotencyKey === 'string'
-            ? req.body.idempotencyKey.trim()
-            : undefined;
-        const idempotencyKey = headerKey || bodyKey;
+        const idempotencyKey = req.header('idempotency-key')?.trim();
         if (!idempotencyKey) {
-          throw new BadRequestError(
-            'Idempotency-Key header (or body.idempotencyKey) is required',
-          );
+          throw new BadRequestError('Idempotency-Key header is required');
         }
 
         const order = await checkoutService.checkout(
