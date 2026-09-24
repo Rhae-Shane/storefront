@@ -26,7 +26,11 @@ export class StockHoldService {
     cartId: string;
     quantity: number;
     stockQuantity: number;
-  }): Promise<{ ok: boolean; availableForRequest: number; reservedTotal: number }> {
+  }): Promise<{
+    ok: boolean;
+    availableForRequest: number;
+    reservedTotal: number;
+  }> {
     const redis = getRedis();
     const { productId, cartId, quantity, stockQuantity } = params;
     const ttl = config.stockHold.ttlSeconds;
@@ -41,11 +45,11 @@ export class StockHoldService {
     }
 
     try {
-      const result = (await redis.eval(
+      const result = await redis.eval(
         STOCK_HOLD_LUA,
         [holdsKey(productId)],
         [cartId, String(quantity), String(stockQuantity), String(ttl)],
-      )) as [number, number, number];
+      );
 
       const ok = result[0] === 1;
       return {
@@ -54,7 +58,10 @@ export class StockHoldService {
         reservedTotal: result[2],
       };
     } catch (err) {
-      logger.warn({ err, productId, cartId }, 'stock hold failed; DB-only check');
+      logger.warn(
+        { err, productId, cartId },
+        'stock hold failed; DB-only check',
+      );
       return {
         ok: quantity <= stockQuantity,
         availableForRequest: stockQuantity,
@@ -72,10 +79,7 @@ export class StockHoldService {
     });
   }
 
-  async releaseCartHolds(
-    cartId: string,
-    productIds: string[],
-  ): Promise<void> {
+  async releaseCartHolds(cartId: string, productIds: string[]): Promise<void> {
     await Promise.all(
       productIds.map((productId) => this.releaseHold(productId, cartId)),
     );
@@ -108,8 +112,8 @@ export class StockHoldService {
     }
     try {
       const values = await redis.hvals(holdsKey(productId));
-      return (values as (string | number)[]).reduce(
-        (sum, v) => sum + Number(v || 0),
+      return values.reduce(
+        (sum: number, v: string | number) => sum + Number(v || 0),
         0,
       );
     } catch {
