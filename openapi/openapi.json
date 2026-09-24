@@ -1,0 +1,1506 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Express API for Shopping Cart",
+    "version": "1.0.0",
+    "description": "REST API with short-lived JWT access tokens and long-lived refresh sessions. Cart/checkout require `x-api-key` and `Authorization: Bearer <accessToken>`. Built with Express, Prisma, and PostgreSQL."
+  },
+  "servers": [
+    {
+      "url": "http://localhost:3002",
+      "description": "Configured BASE_URL"
+    },
+    {
+      "url": "http://localhost:3002",
+      "description": "DEV server (local)"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Auth",
+      "description": "Register, login, refresh, logout"
+    },
+    {
+      "name": "Products",
+      "description": "Browse catalog"
+    },
+    {
+      "name": "Cart",
+      "description": "Cart CRUD for the authenticated user"
+    },
+    {
+      "name": "Checkout",
+      "description": "Place order with stock locking"
+    },
+    {
+      "name": "Health",
+      "description": "Liveness and readiness probes"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "ApiKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-api-key",
+        "description": "API key required for cart and checkout endpoints"
+      },
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Short-lived access JWT (default 15m) from /api/v1/auth/login or /refresh. Pair with long-lived refresh token (default 30d) stored hashed in refresh_sessions."
+      }
+    },
+    "schemas": {
+      "AuthTokens": {
+        "type": "object",
+        "properties": {
+          "accessToken": {
+            "type": "string",
+            "example": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+          },
+          "refreshToken": {
+            "type": "string",
+            "example": "opaque-refresh-token"
+          },
+          "tokenType": {
+            "type": "string",
+            "enum": [
+              "Bearer"
+            ]
+          },
+          "expiresIn": {
+            "type": "integer",
+            "description": "Access token lifetime in seconds",
+            "example": 900
+          },
+          "userId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "accessToken",
+          "refreshToken",
+          "tokenType",
+          "expiresIn",
+          "userId"
+        ]
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "statusCode": {
+            "type": "integer",
+            "example": 400
+          },
+          "message": {
+            "type": "string",
+            "example": "Validation failed"
+          },
+          "requestId": {
+            "type": "string",
+            "format": "uuid",
+            "example": "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+          }
+        },
+        "required": [
+          "statusCode",
+          "message",
+          "requestId"
+        ]
+      },
+      "RegisterRequest": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email",
+            "example": "demo@shop.local"
+          },
+          "password": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 128,
+            "example": "demo1234"
+          }
+        },
+        "required": [
+          "email",
+          "password"
+        ],
+        "additionalProperties": false
+      },
+      "LoginRequest": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email",
+            "example": "demo@shop.local"
+          },
+          "password": {
+            "type": "string",
+            "minLength": 1,
+            "example": "demo1234"
+          }
+        },
+        "required": [
+          "email",
+          "password"
+        ],
+        "additionalProperties": false
+      },
+      "RefreshRequest": {
+        "type": "object",
+        "properties": {
+          "refreshToken": {
+            "type": "string",
+            "minLength": 1,
+            "example": "opaque-refresh-token"
+          }
+        },
+        "required": [
+          "refreshToken"
+        ],
+        "additionalProperties": false
+      },
+      "LogoutRequest": {
+        "type": "object",
+        "properties": {
+          "refreshToken": {
+            "type": "string",
+            "minLength": 1,
+            "example": "opaque-refresh-token"
+          }
+        },
+        "required": [
+          "refreshToken"
+        ],
+        "additionalProperties": false
+      },
+      "ProductList": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/Product"
+        }
+      },
+      "Product": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "example": "550e8400-e29b-41d4-a716-446655440000"
+          },
+          "sku": {
+            "type": "string",
+            "example": "MOUSE-WL-001"
+          },
+          "name": {
+            "type": "string",
+            "example": "Wireless Mouse"
+          },
+          "description": {
+            "type": "string",
+            "nullable": true,
+            "example": "Ergonomic wireless mouse"
+          },
+          "imageUrl": {
+            "type": "string",
+            "nullable": true,
+            "description": "Object-store URL for the product image",
+            "example": "https://cdn.example.com/products/mouse-wl-001.jpg"
+          },
+          "priceCents": {
+            "type": "integer",
+            "example": 2499
+          },
+          "stockQuantity": {
+            "type": "integer",
+            "example": 10
+          },
+          "version": {
+            "type": "integer",
+            "example": 0
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-03-23T05:30:00.000Z"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-03-23T05:30:00.000Z"
+          }
+        },
+        "required": [
+          "id",
+          "sku",
+          "name",
+          "description",
+          "imageUrl",
+          "priceCents",
+          "stockQuantity",
+          "version",
+          "createdAt",
+          "updatedAt"
+        ]
+      },
+      "CartResponse": {
+        "type": "object",
+        "properties": {
+          "cartId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ACTIVE",
+              "CHECKED_OUT",
+              "ABANDONED"
+            ]
+          },
+          "sessionToken": {
+            "type": "string",
+            "nullable": true
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CartLine"
+            }
+          },
+          "totalCents": {
+            "type": "integer",
+            "example": 2499
+          }
+        },
+        "required": [
+          "cartId",
+          "status",
+          "sessionToken",
+          "items",
+          "totalCents"
+        ]
+      },
+      "CartLine": {
+        "type": "object",
+        "properties": {
+          "cartItemId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "productId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "sku": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "imageUrl": {
+            "type": "string",
+            "nullable": true
+          },
+          "quantity": {
+            "type": "integer"
+          },
+          "unitPriceCents": {
+            "type": "integer",
+            "description": "Price snapshot when added to cart"
+          },
+          "livePriceCents": {
+            "type": "integer",
+            "description": "Current catalog price"
+          },
+          "priceChanged": {
+            "type": "boolean"
+          },
+          "lineTotalCents": {
+            "type": "integer"
+          },
+          "availableStock": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "cartItemId",
+          "productId",
+          "sku",
+          "name",
+          "imageUrl",
+          "quantity",
+          "unitPriceCents",
+          "livePriceCents",
+          "priceChanged",
+          "lineTotalCents",
+          "availableStock"
+        ]
+      },
+      "AddCartItemRequest": {
+        "type": "object",
+        "properties": {
+          "productId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Product to add",
+            "example": "550e8400-e29b-41d4-a716-446655440000"
+          },
+          "quantity": {
+            "type": "integer",
+            "minimum": 1,
+            "example": 1
+          }
+        },
+        "required": [
+          "productId",
+          "quantity"
+        ],
+        "additionalProperties": false
+      },
+      "UpdateCartItemRequest": {
+        "type": "object",
+        "properties": {
+          "quantity": {
+            "type": "integer",
+            "minimum": 1,
+            "example": 2
+          }
+        },
+        "required": [
+          "quantity"
+        ],
+        "additionalProperties": false
+      },
+      "MergeCartRequest": {
+        "type": "object",
+        "properties": {
+          "sessionToken": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 128,
+            "description": "Guest session token. Prefer x-cart-session header; body is a fallback.",
+            "example": "guest-session-abc12345"
+          }
+        },
+        "additionalProperties": false
+      },
+      "OrderResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "PENDING",
+              "COMPLETED",
+              "CANCELLED"
+            ]
+          },
+          "totalCents": {
+            "type": "integer",
+            "example": 2499
+          },
+          "cartId": {
+            "type": "string",
+            "nullable": true,
+            "format": "uuid"
+          },
+          "idempotencyKey": {
+            "type": "string"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "productId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "quantity": {
+                  "type": "integer"
+                },
+                "unitPriceCents": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "productId",
+                "quantity",
+                "unitPriceCents"
+              ]
+            }
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "totalCents",
+          "cartId",
+          "idempotencyKey",
+          "items",
+          "createdAt"
+        ]
+      },
+      "StockConflictResponse": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string",
+            "enum": [
+              "INSUFFICIENT_STOCK",
+              "ITEM_OUT_OF_STOCK",
+              "OUT_OF_STOCK"
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "unavailableItems": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UnavailableItem"
+            }
+          },
+          "requested": {
+            "type": "integer"
+          },
+          "available": {
+            "type": "integer"
+          },
+          "requestId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "error",
+          "message"
+        ]
+      },
+      "UnavailableItem": {
+        "type": "object",
+        "properties": {
+          "productId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "requested": {
+            "type": "integer"
+          },
+          "available": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "productId",
+          "name",
+          "requested",
+          "available"
+        ]
+      },
+      "CheckoutRequest": {
+        "type": "object",
+        "properties": {
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 128,
+            "description": "Required unless sent as Idempotency-Key header. Prevents duplicate checkout on retries.",
+            "example": "checkout-7c9e6679-7425-40de-944b-e07fc1f90ae7"
+          }
+        },
+        "additionalProperties": false
+      },
+      "HealthResponse": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok"
+            ]
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "status",
+          "timestamp"
+        ]
+      },
+      "ReadyResponse": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ready",
+              "not_ready"
+            ]
+          },
+          "checks": {
+            "type": "object",
+            "properties": {
+              "database": {
+                "type": "string",
+                "enum": [
+                  "up",
+                  "down"
+                ]
+              }
+            },
+            "required": [
+              "database"
+            ]
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "status",
+          "checks",
+          "timestamp"
+        ]
+      }
+    },
+    "parameters": {}
+  },
+  "paths": {
+    "/api/v1/auth/register": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Register",
+        "description": "Create an account. Returns a short-lived access JWT and a long-lived opaque refresh token (session).",
+        "parameters": [
+          {
+            "name": "x-request-id",
+            "in": "header",
+            "required": false,
+            "description": "Optional client-supplied request ID for log correlation. If omitted, the server generates a UUID.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Registered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthTokens"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Email already registered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/login": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Login",
+        "description": "Exchange email/password for access JWT (short-lived) + refresh token (long-lived session).",
+        "parameters": [
+          {
+            "name": "x-request-id",
+            "in": "header",
+            "required": false,
+            "description": "Optional client-supplied request ID for log correlation. If omitted, the server generates a UUID.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authenticated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthTokens"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/refresh": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Refresh Tokens",
+        "description": "Rotate refresh session: revoke the presented refresh token and issue a new access + refresh pair.",
+        "parameters": [
+          {
+            "name": "x-request-id",
+            "in": "header",
+            "required": false,
+            "description": "Optional client-supplied request ID for log correlation. If omitted, the server generates a UUID.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefreshRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Rotated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthTokens"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid/expired refresh token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/logout": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Logout",
+        "description": "Revoke a single refresh session.",
+        "parameters": [
+          {
+            "name": "x-request-id",
+            "in": "header",
+            "required": false,
+            "description": "Optional client-supplied request ID for log correlation. If omitted, the server generates a UUID.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LogoutRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Session revoked"
+          }
+        }
+      }
+    },
+    "/api/v1/auth/logout-all": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Logout All Sessions",
+        "description": "Revoke all refresh sessions for the current user.",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-request-id",
+            "in": "header",
+            "required": false,
+            "description": "Optional client-supplied request ID for log correlation. If omitted, the server generates a UUID.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "All sessions revoked"
+          },
+          "401": {
+            "description": "Missing/invalid access token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/products": {
+      "get": {
+        "tags": [
+          "Products"
+        ],
+        "summary": "List Products",
+        "description": "Returns all products ordered by name. Public.",
+        "parameters": [
+          {
+            "name": "x-request-id",
+            "in": "header",
+            "required": false,
+            "description": "Optional client-supplied request ID for log correlation. If omitted, the server generates a UUID.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Product list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductList"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/products/{id}": {
+      "get": {
+        "tags": [
+          "Products"
+        ],
+        "summary": "Get Product",
+        "description": "Returns a single product by UUID. Public.",
+        "parameters": [
+          {
+            "name": "x-request-id",
+            "in": "header",
+            "required": false,
+            "description": "Optional client-supplied request ID for log correlation. If omitted, the server generates a UUID.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Product UUID",
+              "example": "550e8400-e29b-41d4-a716-446655440000"
+            },
+            "required": true,
+            "description": "Product UUID",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Product",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Product"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid UUID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/cart": {
+      "get": {
+        "tags": [
+          "Cart"
+        ],
+        "summary": "Get Cart",
+        "description": "Returns the current ACTIVE cart. Auth: Bearer JWT (user) OR `x-cart-session` (guest). Prefer Bearer when both are present.",
+        "security": [
+          {
+            "ApiKeyAuth": [],
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-request-id",
+            "in": "header",
+            "required": false,
+            "description": "Optional client-supplied request ID for log correlation. If omitted, the server generates a UUID.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Cart",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CartResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/cart/items": {
+      "post": {
+        "tags": [
+          "Cart"
+        ],
+        "summary": "Add Cart Item",
+        "description": "Adds a product to the cart (or increments quantity). Stricter write rate limit.",
+        "security": [
+          {
+            "ApiKeyAuth": [],
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-request-id",
+            "in": "header",
+            "required": false,
+            "description": "Optional client-supplied request ID for log correlation. If omitted, the server generates a UUID.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddCartItemRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Updated cart",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CartResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation or stock error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Product not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Write rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/cart/items/{productId}": {
+      "patch": {
+        "tags": [
+          "Cart"
+        ],
+        "summary": "Update Cart Item Quantity",
+        "security": [
+          {
+            "ApiKeyAuth": [],
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-request-id",
+            "in": "header",
+            "required": false,
+            "description": "Optional client-supplied request ID for log correlation. If omitted, the server generates a UUID.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Product UUID in the cart",
+              "example": "550e8400-e29b-41d4-a716-446655440000"
+            },
+            "required": true,
+            "description": "Product UUID in the cart",
+            "name": "productId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateCartItemRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated cart",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CartResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation or stock error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Cart item not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Write rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Cart"
+        ],
+        "summary": "Remove Cart Item",
+        "security": [
+          {
+            "ApiKeyAuth": [],
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-request-id",
+            "in": "header",
+            "required": false,
+            "description": "Optional client-supplied request ID for log correlation. If omitted, the server generates a UUID.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Product UUID in the cart",
+              "example": "550e8400-e29b-41d4-a716-446655440000"
+            },
+            "required": true,
+            "description": "Product UUID in the cart",
+            "name": "productId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed (idempotent)"
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Write rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/cart/merge": {
+      "post": {
+        "tags": [
+          "Cart"
+        ],
+        "summary": "Merge Guest Cart Into User Cart",
+        "description": "Call explicitly right after login/register. Requires Bearer JWT + guest session (`x-cart-session` or body.sessionToken). Sums quantities on productId collisions, then marks the guest cart ABANDONED.",
+        "security": [
+          {
+            "ApiKeyAuth": [],
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-request-id",
+            "in": "header",
+            "required": false,
+            "description": "Optional client-supplied request ID for log correlation. If omitted, the server generates a UUID.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "x-cart-session",
+            "in": "header",
+            "required": false,
+            "description": "Guest cart session token (preferred over body).",
+            "schema": {
+              "type": "string",
+              "minLength": 8
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MergeCartRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Merged user cart",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CartResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing session token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/checkout": {
+      "post": {
+        "tags": [
+          "Checkout"
+        ],
+        "summary": "Checkout",
+        "description": "Atomic conditional stock decrement (`stock_quantity >= qty AND version = expected`) + order create. **Idempotency-Key is required** (header or body). Order is created PENDING then flipped to COMPLETED after sync “payment” succeeds. Marks cart CHECKED_OUT and opens a new ACTIVE cart. Returns 409 OUT_OF_STOCK if stock raced away.",
+        "security": [
+          {
+            "ApiKeyAuth": [],
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-request-id",
+            "in": "header",
+            "required": false,
+            "description": "Optional client-supplied request ID for log correlation. If omitted, the server generates a UUID.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Unique key per checkout attempt (required for retry safety).",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CheckoutRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Order created (or idempotent replay)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Cart empty",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Insufficient stock",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StockConflictResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Write rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "tags": [
+          "Health"
+        ],
+        "summary": "Liveness Probe",
+        "description": "Process is up. Does not check database.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ready": {
+      "get": {
+        "tags": [
+          "Health"
+        ],
+        "summary": "Readiness Probe",
+        "description": "Checks PostgreSQL connectivity.",
+        "responses": {
+          "200": {
+            "description": "Ready",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadyResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Not ready",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadyResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
